@@ -1,1 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Health Voice Assistant</title>
+  <style>
+    :root {
+      --bg-color: #0d1117;
+      --card-bg: #161b22;
+      --accent: #238636;
+      --accent-glow: #2ea043;
+      --text-main: #c9d1d9;
+      --text-muted: #8b949e;
+    }
 
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 600px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .visualizer-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      border: 1px solid #30363d;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    .controls {
+      margin-top: 16px;
+      display: flex;
+      gap: 12px;
+    }
+
+    button {
+      padding: 10px 20px;
+      border-radius: 20px;
+      border: none;
+      background-color: var(--accent);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.1s ease;
+    }
+
+    button:hover {
+      background-color: var(--accent-glow);
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    button.active {
+      background-color: #da3633;
+    }
+
+    .transcript-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 16px;
+      border: 1px solid #30363d;
+      height: 250px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .transcript-log {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-right: 8px;
+    }
+
+    .message {
+      padding: 8px 12px;
+      border-radius: 8px;
+      max-width: 80%;
+      font-size: 0.9rem;
+      line-height: 1.4;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background-color: #1f6feb;
+      color: white;
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+      background-color: #21262d;
+      color: var(--text-main);
+      border: 1px solid #30363d;
+    }
+
+    .message .time {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="visualizer-card">
+      <canvas id="orbCanvas" width="200" height="200"></canvas>
+      <canvas id="spectrumCanvas" width="300" height="60"></canvas>
+      <div class="controls">
+        <button id="toggleMicBtn">Start Listening</button>
+      </div>
+    </div>
+
+    <div class="transcript-card">
+      <div class="transcript-log" id="transcriptLog">
+        <div class="message assistant">
+          Hello! How can I assist with your health goals today?
+          <div class="time">System</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let audioCtx;
+    let analyser;
+    let microphone;
+    let isListening = false;
+    let animationId;
+
+    const orbCanvas = document.getElementById('orbCanvas');
+    const orbCtx = orbCanvas.getContext('2d');
+    const spectrumCanvas = document.getElementById('spectrumCanvas');
+    const spectrumCtx = spectrumCanvas.getContext('2d');
+    const toggleMicBtn = document.getElementById('toggleMicBtn');
+    const transcriptLog = document.getElementById('transcriptLog');
+
+    toggleMicBtn.addEventListener('click', async () => {
+      if (!isListening) {
+        await startAudio();
+      } else {
+        stopAudio();
+      }
+    });
+
+    async function startAudio() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 64;
+        
+        microphone = audioCtx.createMediaStreamSource(stream);
+        microphone.connect(analyser);
+
+        isListening = true;
+        toggleMicBtn.textContent = 'Stop Listening';
+        toggleMicBtn.classList.add('active');
+
+        addMessage('Listening for health query...', 'user');
+        renderVisuals();
+      } catch (err) {
+        alert('Microphone access denied or unavailable.');
+        console.error(err);
+      }
+    }
+
+    function stopAudio() {
+      if (microphone && microphone.mediaStream) {
+        microphone.mediaStream.getTracks().forEach(track => track.stop());
+      }
+      if (audioCtx) {
+        audioCtx.close();
+      }
+      isListening = false;
+      cancelAnimationFrame(animationId);
+      toggleMicBtn.textContent = 'Start Listening';
+      toggleMicBtn.classList.remove('active');
+
+      // Clear canvases
+      orbCtx.clearRect(0, 0, orbCanvas.width, orbCanvas.height);
+      spectrumCtx.clearRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
+
+      addMessage('Session paused. Ready when you are.', 'assistant');
+    }
+
+    function renderVisuals() {
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      function draw() {
+        animationId = requestAnimationFrame(draw);
+        analyser.getByteFrequencyData(dataArray);
+
+        // Calculate average audio level (0 to 255)
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / bufferLength;
+
+        // Render Active Voice Orb
+        orbCtx.clearRect(0, 0, orbCanvas.width, orbCanvas.height);
+        const centerX = orbCanvas.width / 2;
+        const centerY = orbCanvas.height / 2;
+        const baseRadius = 40;
+        const dynamicRadius = baseRadius + (average / 255) * 35;
+
+        const gradient = orbCtx.createRadialGradient(
+          centerX, centerY, 5,
+          centerX, centerY, dynamicRadius
+        );
+        gradient.addColorStop(0, '#58a6ff');
+        gradient.addColorStop(0.6, '#1f6feb');
+        gradient.addColorStop(1, 'transparent');
+
+        orbCtx.beginPath();
+        orbCtx.arc(centerX, centerY, dynamicRadius, 0, Math.PI * 2);
+        orbCtx.fillStyle = gradient;
+        orbCtx.fill();
+
+        // Render Waveform Spectrum Bars
+        spectrumCtx.clearRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
+        const barWidth = (spectrumCanvas.width / bufferLength) * 1.5;
+        let x = 0;
+
+        for (let i = 0; i < bufferLength; i++) {
+          const barHeight = (dataArray[i] / 255) * spectrumCanvas.height;
+
+          spectrumCtx.fillStyle = '#2ea043';
+          spectrumCtx.fillRect(
+            x,
+            spectrumCanvas.height - barHeight,
+            barWidth - 2,
+            barHeight
+          );
+
+          x += barWidth;
+        }
+      }
+
+      draw();
+    }
+
+    function addMessage(text, sender) {
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `message ${sender}`;
+      
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      msgDiv.innerHTML = `${text} <div class="time">${timeStr}</div>`;
+
+      transcriptLog.appendChild(msgDiv);
+      transcriptLog.scrollTop = transcriptLog.scrollHeight;
+    }
+  </script>
+</body>
+</html>
